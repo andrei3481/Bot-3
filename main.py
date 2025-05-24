@@ -5,6 +5,8 @@ import logging
 from dotenv import load_dotenv
 import telebot
 
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+
 load_dotenv()
 
 # ====== Твои данные из .env ======
