@@ -1,5 +1,4 @@
 requests
-python-telegram-bot==20.5
+python-telegram-bot==20.6
+flask
 python-dotenv
-aiohttp
-websockets
