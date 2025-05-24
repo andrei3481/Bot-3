@@ -1,4 +1,5 @@
-requests
-flask
 python-dotenv
-python-telegram-bot==20.6
+requests
+aiohttp
+asyncio
+logging
