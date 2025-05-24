@@ -1,5 +1,5 @@
-python-dotenv
 requests
+python-telegram-bot==20.5
+python-dotenv
 aiohttp
-asyncio
-logging
+websockets
