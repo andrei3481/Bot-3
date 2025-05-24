@@ -2,10 +2,21 @@ import os
 import requests
 import time
 import logging
-from dotenv import load_dotenv
 import telebot
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.send_message(message.chat.id, "Бот запущен!")
+
+bot.polling()
 
 load_dotenv()
 
