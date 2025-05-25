@@ -1,69 +1,74 @@
 import os
+import asyncio
 import requests
 import logging
-import time
 from telegram import Bot
-from keep_alive import keep_alive
 from dotenv import load_dotenv
+from keep_alive import keep_alive
 
+# Настройка
 load_dotenv()
-
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 ONEINCH_API_KEY = os.getenv('ONEINCH_API_KEY')
+CHAIN_ID = os.getenv('CHAIN_ID', '137')
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-logging.basicConfig(level=logging.INFO)
+# Топ-70 токенов (пример, можно расширить)
+TOKENS = [
+    {'symbol': 'USDC', 'address': '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'},
+    {'symbol': 'USDT', 'address': '0x3813e82e6f7098b9583FC0F33a962D02018B6803'},
+    {'symbol': 'MATIC', 'address': '0x0000000000000000000000000000000000001010'},
+    {'symbol': 'DAI', 'address': '0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063'},
+    # Добавь остальные токены сюда
+]
 
-TOKENS = {
-    "MATIC": "0x0000000000000000000000000000000000001010",
-    "USDC": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-    "USDT": "0xC2132D05D31c914A87C6611C10748AaCbA9e4F61",
-    "DAI": "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063",
-    # Добавь свои токены сюда!
+DEX_URLS = {
+    "1inch": f"https://api.1inch.dev/swap/v5.2/{CHAIN_ID}/quote",
+    "OpenOcean": f"https://open-api.openocean.finance/v3/{CHAIN_ID}/quote"
 }
 
-def get_1inch_price(from_token, to_token, amount):
-    url = f"https://api.1inch.dev/swap/v5.2/137/quote?src={from_token}&dst={to_token}&amount={amount}"
-    headers = {"Authorization": f"Bearer {ONEINCH_API_KEY}"}
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        return response.json()
-    except Exception as e:
-        logging.warning(f"Ошибка 1inch: {e}")
-        return None
+HEADERS = {"Authorization": f"Bearer {ONEINCH_API_KEY}"}
 
-def get_openocean_price(from_token, to_token, amount):
-    url = f"https://open-api.openocean.finance/v3/137/quote?inTokenAddress={from_token}&outTokenAddress={to_token}&amount={amount}"
-    try:
-        response = requests.get(url, timeout=10)
-        return response.json()
-    except Exception as e:
-        logging.warning(f"Ошибка OpenOcean: {e}")
-        return None
-
-def check_arbitrage():
-    for token_a_name, token_a in TOKENS.items():
-        for token_b_name, token_b in TOKENS.items():
-            if token_a != token_b:
-                amount = str(40 * (10 ** 6))  # $40 в 6 знаках
-                price_1inch = get_1inch_price(token_a, token_b, amount)
-                price_open = get_openocean_price(token_a, token_b, amount)
-
-                if price_1inch and price_open:
+async def check_arbitrage():
+    while True:
+        try:
+            for token_in in TOKENS:
+                for token_out in TOKENS:
+                    if token_in['symbol'] == token_out['symbol']:
+                        continue
                     try:
-                        oneinch_amount = float(price_1inch['toAmount']) / (10 ** 6)
-                        open_amount = float(price_open['data']['outAmount']) / (10 ** 6)
-                        diff = (oneinch_amount - open_amount) / open_amount * 100
-                        if abs(diff) > 0.5:
-                            msg = f"💹 Арбитраж найден:\n{token_a_name} ➡️ {token_b_name}\n1inch: {oneinch_amount:.4f}\nOpenOcean: {open_amount:.4f}\nDiff: {diff:.2f}%"
-                            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+                        # 1inch запрос
+                        one_inch_res = requests.get(
+                            DEX_URLS["1inch"],
+                            params={"src": token_in['address'], "dst": token_out['address'], "amount": str(40 * 10**6)}, # $40 USDC
+                            headers=HEADERS
+                        ).json()
+                        one_inch_price = float(one_inch_res['toAmount']) / 10**6 if 'toAmount' in one_inch_res else None
+
+                        # OpenOcean запрос
+                        oo_res = requests.get(
+                            DEX_URLS["OpenOcean"],
+                            params={"inTokenAddress": token_in['address'], "outTokenAddress": token_out['address'], "amount": str(40 * 10**6)}
+                        ).json()
+                        oo_price = float(oo_res['data']['outAmount']) / 10**6 if 'data' in oo_res and 'outAmount' in oo_res['data'] else None
+
+                        if one_inch_price and oo_price:
+                            diff = abs(one_inch_price - oo_price) / min(one_inch_price, oo_price) * 100
+                            if diff >= 0.5:
+                                message = f"💸 Возможность арбитража:\n" \
+                                          f"{token_in['symbol']} ➡ {token_out['symbol']}\n" \
+                                          f"Цена 1inch: {one_inch_price:.6f}\n" \
+                                          f"Цена OpenOcean: {oo_price:.6f}\n" \
+                                          f"Разница: {diff:.2f}%"
+                                await bot.send_message(chat_id=CHAT_ID, text=message)
                     except Exception as e:
-                        logging.warning(f"Ошибка обработки: {e}")
+                        logging.warning(f"Ошибка при проверке {token_in['symbol']} -> {token_out['symbol']}: {e}")
+        except Exception as e:
+            logging.warning(f"Глобальная ошибка: {e}")
+        await asyncio.sleep(10)
 
-keep_alive()
-
-while True:
-    check_arbitrage()
-    time.sleep(30)
+if __name__ == '__main__':
+    keep_alive()
+    asyncio.run(check_arbitrage())
