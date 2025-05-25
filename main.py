@@ -1,79 +1,69 @@
 import os
-import time
 import requests
 import logging
-from dotenv import load_dotenv
+import time
 from telegram import Bot
 from keep_alive import keep_alive
+from dotenv import load_dotenv
 
-# Загрузка .env
 load_dotenv()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-ONE_INCH_API_KEY = os.getenv("ONE_INCH_API_KEY")
-CHAIN_ID = os.getenv("CHAIN_ID", "137")
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+ONEINCH_API_KEY = os.getenv('ONEINCH_API_KEY')
 
 bot = Bot(token=TELEGRAM_TOKEN)
+
 logging.basicConfig(level=logging.INFO)
 
-# Топ-70 токенов (пример, подставь все свои!)
 TOKENS = {
-    "USDT": "0x3813e82e6f7098b9583FC0F33a962D02018B6803",
+    "MATIC": "0x0000000000000000000000000000000000001010",
     "USDC": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+    "USDT": "0xC2132D05D31c914A87C6611C10748AaCbA9e4F61",
     "DAI": "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063",
-    "WETH": "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
-    # ... добавь остальные!
+    # Добавь свои токены сюда!
 }
 
-# DEX API
-DEX_APIS = {
-    "1inch": lambda from_, to, amount: f"https://api.1inch.io/v5.0/{CHAIN_ID}/quote?fromTokenAddress={from_}&toTokenAddress={to}&amount={amount}&src=api&apiKey={ONE_INCH_API_KEY}",
-    "OpenOcean": lambda from_, to, amount: f"https://open-api.openocean.finance/v3/{CHAIN_ID}/quote?inTokenAddress={from_}&outTokenAddress={to}&amount={amount}",
-    # Добавим другие API позже
-}
+def get_1inch_price(from_token, to_token, amount):
+    url = f"https://api.1inch.dev/swap/v5.2/137/quote?src={from_token}&dst={to_token}&amount={amount}"
+    headers = {"Authorization": f"Bearer {ONEINCH_API_KEY}"}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        return response.json()
+    except Exception as e:
+        logging.warning(f"Ошибка 1inch: {e}")
+        return None
 
-def get_price(dex_name, url):
+def get_openocean_price(from_token, to_token, amount):
+    url = f"https://open-api.openocean.finance/v3/137/quote?inTokenAddress={from_token}&outTokenAddress={to_token}&amount={amount}"
     try:
         response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        if not data:
-            raise ValueError("Empty response")
-        return data
+        return response.json()
     except Exception as e:
-        logging.warning(f"Ошибка {dex_name}: {e}")
+        logging.warning(f"Ошибка OpenOcean: {e}")
         return None
 
 def check_arbitrage():
-    amount = 40 * (10 ** 6)  # USDT = 6 decimals
-    for from_token, from_addr in TOKENS.items():
-        for to_token, to_addr in TOKENS.items():
-            if from_token == to_token:
-                continue
-            prices = {}
-            for dex, api_func in DEX_APIS.items():
-                url = api_func(from_addr, to_addr, amount)
-                data = get_price(dex, url)
-                if data:
-                    price = float(data.get("toTokenAmount", 0)) / (10 ** 6)
-                    prices[dex] = price
-                time.sleep(1)
+    for token_a_name, token_a in TOKENS.items():
+        for token_b_name, token_b in TOKENS.items():
+            if token_a != token_b:
+                amount = str(40 * (10 ** 6))  # $40 в 6 знаках
+                price_1inch = get_1inch_price(token_a, token_b, amount)
+                price_open = get_openocean_price(token_a, token_b, amount)
 
-            if len(prices) >= 2:
-                best_buy = min(prices, key=prices.get)
-                best_sell = max(prices, key=prices.get)
-                diff = (prices[best_sell] - prices[best_buy]) / prices[best_buy] * 100
-                if diff >= 0.5:
-                    msg = f"🚀 Арбитраж ({from_token} ➡️ {to_token}):\n🔹 Купить на {best_buy}: {prices[best_buy]:.4f}\n🔹 Продать на {best_sell}: {prices[best_sell]:.4f}\n💰 Профит: {diff:.2f}%"
-                    logging.info(msg)
+                if price_1inch and price_open:
                     try:
-                        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+                        oneinch_amount = float(price_1inch['toAmount']) / (10 ** 6)
+                        open_amount = float(price_open['data']['outAmount']) / (10 ** 6)
+                        diff = (oneinch_amount - open_amount) / open_amount * 100
+                        if abs(diff) > 0.5:
+                            msg = f"💹 Арбитраж найден:\n{token_a_name} ➡️ {token_b_name}\n1inch: {oneinch_amount:.4f}\nOpenOcean: {open_amount:.4f}\nDiff: {diff:.2f}%"
+                            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
                     except Exception as e:
-                        logging.warning(f"Ошибка Telegram: {e}")
+                        logging.warning(f"Ошибка обработки: {e}")
 
-if __name__ == "__main__":
-    keep_alive()
-    while True:
-        check_arbitrage()
-        time.sleep(60)
+keep_alive()
+
+while True:
+    check_arbitrage()
+    time.sleep(30)
