@@ -1,74 +1,85 @@
 import os
-import asyncio
+import time
 import requests
 import logging
 from telegram import Bot
-from dotenv import load_dotenv
 from keep_alive import keep_alive
+from dotenv import load_dotenv
 
-# Настройка
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-ONEINCH_API_KEY = os.getenv('ONEINCH_API_KEY')
-CHAIN_ID = os.getenv('CHAIN_ID', '137')
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# Топ-70 токенов (пример, можно расширить)
-TOKENS = [
-    {'symbol': 'USDC', 'address': '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'},
-    {'symbol': 'USDT', 'address': '0x3813e82e6f7098b9583FC0F33a962D02018B6803'},
-    {'symbol': 'MATIC', 'address': '0x0000000000000000000000000000000000001010'},
-    {'symbol': 'DAI', 'address': '0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063'},
-    # Добавь остальные токены сюда
-]
-
-DEX_URLS = {
-    "1inch": f"https://api.1inch.dev/swap/v5.2/{CHAIN_ID}/quote",
-    "OpenOcean": f"https://open-api.openocean.finance/v3/{CHAIN_ID}/quote"
+DEX_ENDPOINTS = {
+    "1inch": "https://api.1inch.dev/swap/v5.2/137/quote",
+    "OpenOcean": "https://open-api.openocean.finance/v3/137/quote"
 }
 
-HEADERS = {"Authorization": f"Bearer {ONEINCH_API_KEY}"}
+HEADERS_1INCH = {
+    "Authorization": f"Bearer {os.getenv('ONEINCH_API_KEY')}"
+}
 
-async def check_arbitrage():
-    while True:
-        try:
-            for token_in in TOKENS:
-                for token_out in TOKENS:
-                    if token_in['symbol'] == token_out['symbol']:
-                        continue
-                    try:
-                        # 1inch запрос
-                        one_inch_res = requests.get(
-                            DEX_URLS["1inch"],
-                            params={"src": token_in['address'], "dst": token_out['address'], "amount": str(40 * 10**6)}, # $40 USDC
-                            headers=HEADERS
-                        ).json()
-                        one_inch_price = float(one_inch_res['toAmount']) / 10**6 if 'toAmount' in one_inch_res else None
+TOKENS = [
+    {"symbol": "USDC", "address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", "decimals": 6},
+    {"symbol": "USDT", "address": "0x3813e82e6f7098b9583FC0F33a962D02018B6803", "decimals": 6},
+    {"symbol": "DAI", "address": "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063", "decimals": 18},
+    {"symbol": "MATIC", "address": "0x0000000000000000000000000000000000001010", "decimals": 18},
+]
 
-                        # OpenOcean запрос
-                        oo_res = requests.get(
-                            DEX_URLS["OpenOcean"],
-                            params={"inTokenAddress": token_in['address'], "outTokenAddress": token_out['address'], "amount": str(40 * 10**6)}
-                        ).json()
-                        oo_price = float(oo_res['data']['outAmount']) / 10**6 if 'data' in oo_res and 'outAmount' in oo_res['data'] else None
+AMOUNT = 40 * (10 ** 6)  # $40 USDC/USDT
 
-                        if one_inch_price and oo_price:
-                            diff = abs(one_inch_price - oo_price) / min(one_inch_price, oo_price) * 100
-                            if diff >= 0.5:
-                                message = f"💸 Возможность арбитража:\n" \
-                                          f"{token_in['symbol']} ➡ {token_out['symbol']}\n" \
-                                          f"Цена 1inch: {one_inch_price:.6f}\n" \
-                                          f"Цена OpenOcean: {oo_price:.6f}\n" \
-                                          f"Разница: {diff:.2f}%"
-                                await bot.send_message(chat_id=CHAT_ID, text=message)
-                    except Exception as e:
-                        logging.warning(f"Ошибка при проверке {token_in['symbol']} -> {token_out['symbol']}: {e}")
-        except Exception as e:
-            logging.warning(f"Глобальная ошибка: {e}")
-        await asyncio.sleep(10)
+logging.basicConfig(level=logging.WARNING)
 
-if __name__ == '__main__':
+def get_price_1inch(token_in, token_out):
+    try:
+        params = {
+            "src": token_in["address"],
+            "dst": token_out["address"],
+            "amount": AMOUNT
+        }
+        response = requests.get(DEX_ENDPOINTS["1inch"], headers=HEADERS_1INCH, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("toAmount")
+    except Exception as e:
+        logging.warning(f"Ошибка 1inch при проверке {token_in['symbol']} -> {token_out['symbol']}: {e}")
+        return None
+
+def get_price_openocean(token_in, token_out):
+    try:
+        params = {
+            "inTokenAddress": token_in["address"],
+            "outTokenAddress": token_out["address"],
+            "amount": AMOUNT
+        }
+        response = requests.get(DEX_ENDPOINTS["OpenOcean"], params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("data", {}).get("outAmount")
+    except Exception as e:
+        logging.warning(f"Ошибка OpenOcean при проверке {token_in['symbol']} -> {token_out['symbol']}: {e}")
+        return None
+
+def check_arbitrage():
+    for token_in in TOKENS:
+        for token_out in TOKENS:
+            if token_in != token_out:
+                price_1inch = get_price_1inch(token_in, token_out)
+                price_openocean = get_price_openocean(token_in, token_out)
+                
+                if price_1inch and price_openocean:
+                    profit_percent = (float(price_openocean) - float(price_1inch)) / float(price_1inch) * 100
+                    if profit_percent >= 0.5:
+                        message = f"💰 Арбитраж найдeн:\n🔁 {token_in['symbol']} -> {token_out['symbol']}\n\n1inch: {price_1inch}\nOpenOcean: {price_openocean}\nProfit: {profit_percent:.2f}%"
+                        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+                else:
+                    logging.warning(f"Недостаточно данных для {token_in['symbol']} -> {token_out['symbol']}")
+
+if __name__ == "__main__":
     keep_alive()
-    asyncio.run(check_arbitrage())
+    while True:
+        check_arbitrage()
+        time.sleep(10)
